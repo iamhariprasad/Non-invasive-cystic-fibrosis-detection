@@ -1,0 +1,138 @@
+#include <Wire.h>
+#include "MAX30105.h"
+#include <WiFi.h>
+#include <ThingSpeak.h>
+#include "Adafruit_TCS34725.h"
+#include "DHT.h"
+
+// ===== MAX30102 =====
+MAX30105 particleSensor;
+
+// ===== WiFi / ThingSpeak =====
+const char* WIFI_SSID = "Amrita_CHN";
+const char* WIFI_PASS = "amrita@321";
+
+unsigned long myChannelNumber = 3050936;              // <-- replace with your channel ID
+const char* myWriteAPIKey = "ID01WLWVIGS34W8K";       // <-- replace with your Write API Key (keep quotes)
+
+WiFiClient client;
+
+// ===== DHT =====            
+#define DHTPIN 4
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// ===== TCS34725 =====
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_600MS, TCS34725_GAIN_1X);
+
+void setup() {
+  Serial.begin(9600);
+  delay(100);
+
+  // ===== MAX30102 init =====
+  if (particleSensor.begin() == false) {
+    Serial.println("MAX30102 was not found. Please check wiring/power.");
+    while (1);
+  }
+  particleSensor.setup();  // Configure sensor. Use 6.4mA for LED drive
+
+  // ===== DHT init =====
+  dht.begin();
+
+  // ===== TCS34725 init =====
+  if (!tcs.begin()) {
+    Serial.println("No TCS34725 found ... check wiring!");
+    while (1);
+  } else {
+    Serial.println("TCS34725 found");
+  }
+
+  // ===== WiFi connect =====
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.print("Connecting WiFi");
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    if (millis() - start > 20000) { // 20s timeout
+      Serial.println("\nWiFi connection timeout. Reset device or check credentials.");
+      break;
+    }
+  }
+  Serial.println();
+  Serial.print("WiFi status: ");
+  Serial.println(WiFi.status()==WL_CONNECTED ? "Connected" : "Not connected");
+
+  ThingSpeak.begin(client);
+
+  randomSeed(analogRead(0)); // seed RNG
+}
+
+void loop() {
+  // ===== MAX30102 readings =====
+  Serial.print(" R[");
+  Serial.print(particleSensor.getRed());
+  Serial.print("] IR[");
+  Serial.print(particleSensor.getIR());
+  Serial.println("]");
+
+  // ===== DHT readings =====
+  float humidity = dht.readHumidity();
+  float temperatureC = dht.readTemperature();
+
+  if (isnan(humidity) || isnan(temperatureC)) {
+    Serial.println("Failed to read from DHT sensor!");
+    return;
+  }
+
+  // ===== TCS34725 readings =====
+  uint16_t r,g,b,c;
+  tcs.getRawData(&r,&g,&b,&c);
+  if (c == 0) c = 1;
+  float red   = (float)r / c * 255.0;
+  float green = (float)g / c * 255.0;
+  float blue  = (float)b / c * 255.0;
+
+  // Approximate chloride level
+  int chloride = 0;
+  if (red > 100 && green > 80 && blue < 60) chloride = 1500;
+  else if (red > 80 && green > 70) chloride = 1000;
+  else if (red > 60 && green > 50) chloride = 500;
+  else chloride = 0;
+
+// Simulated SpO2 & Heart Rate (more realistic)
+int baseSpo2 = 97;                // healthy baseline
+int baseHR = 75;                  // average resting HR
+int spo2Variation = random(-2, 3); // small variation (-2 to +2)
+int hrVariation = random(-5, 6);   // small variation (-5 to +5)
+
+int spo2 = baseSpo2 + spo2Variation;
+int heartrate = baseHR + hrVariation;
+
+// Make sure values stay in safe bounds
+spo2 = constrain(spo2, 90, 100);
+heartrate = constrain(heartrate, 50, 120);
+
+  // Debug CSV output
+  Serial.print("CSV: ");
+  Serial.print(chloride); Serial.print(",");
+  Serial.print(humidity); Serial.print(",");
+  Serial.print(spo2); Serial.print(",");
+  Serial.println(heartrate);
+
+  // ===== ThingSpeak upload =====
+  ThingSpeak.setField(1, chloride);
+  ThingSpeak.setField(2, humidity);
+  ThingSpeak.setField(3, spo2);
+  ThingSpeak.setField(4, heartrate);
+
+  int resp = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+  if (resp == 200) {
+    Serial.println("ThingSpeak update successful.");
+  } else {
+    Serial.print("ThingSpeak update failed, HTTP code: ");
+    Serial.println(resp);
+  }
+
+  delay(20000); // minimum 15s for ThingSpeak
+}

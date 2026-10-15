@@ -1,0 +1,20 @@
+% Train and save model
+data = readtable('cf_data.csv');
+X = data{:, {'chloride','humidity','spo2','heartrate'}};
+Y = data.diagnosis;
+
+mdl = fitcsvm(X,Y,'KernelFunction','rbf','Standardize',true);
+saveCompactModel(mdl,'CF_Model');   % saves to CF_Model.mat
+
+% Later (or in ThingSpeak)
+mdl = loadCompactModel('CF_Model');  % load it back
+
+% Predict with new live data
+liveData = [1000 55 97 80];          % sample values
+prediction = predict(mdl,liveData);
+
+if prediction == 1
+    disp('⚠️ CF risk detected');
+else
+    disp('✅ Normal condition');
+end
